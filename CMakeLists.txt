@@ -75,11 +75,6 @@ PUBLIC
     ${src_loc}
 )
 
-if (LINUX)
-    find_package(PkgConfig REQUIRED)
-    pkg_check_modules(PIPEWIRE REQUIRED IMPORTED_TARGET libpipewire-0.3)
-endif()
-
 target_link_libraries(lib_webrtc
 PUBLIC
     desktop-app::lib_base
@@ -88,5 +83,4 @@ PUBLIC
     desktop-app::external_openal
 PRIVATE
     desktop-app::external_webrtc
-    $<$<BOOL:${LINUX}>:PkgConfig::PIPEWIRE>
 )

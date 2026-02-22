@@ -13,7 +13,9 @@
 
 #ifdef WEBRTC_WIN
 #include "webrtc/platform/win/webrtc_loopback_adm_win.h"
-#endif // WEBRTC_WIN
+#elif defined WEBRTC_LINUX // WEBRTC_WIN
+#include "webrtc/platform/linux/webrtc_loopback_adm_linux.h"
+#endif // WEBRTC_WIN || WEBRTC_LINUX
 
 namespace Webrtc {
 
@@ -44,13 +46,29 @@ AudioDeviceModulePtr CreateLoopbackAudioDeviceModule(
 	if (result->Init() == 0) {
 		return result;
 	}
-#endif // WEBRTC_WIN
+#elif defined WEBRTC_LINUX // WEBRTC_WIN
+	auto result = rtc::make_ref_counted<details::AudioDeviceLoopbackLinux>(
+		factory);
+	if (result->Init() == 0) {
+		return result;
+	}
+#endif // WEBRTC_WIN || WEBRTC_LINUX
 	return nullptr;
 }
 
 auto LoopbackAudioDeviceModuleCreator()
 -> std::function<AudioDeviceModulePtr(webrtc::TaskQueueFactory*)> {
 	return CreateLoopbackAudioDeviceModule;
+}
+
+bool LoopbackAudioCaptureSupported() {
+#ifdef WEBRTC_WIN
+	return true;
+#elif defined WEBRTC_LINUX // WEBRTC_WIN
+	return details::AudioDeviceLoopbackLinux::IsSupported();
+#else // WEBRTC_WIN || WEBRTC_LINUX
+	return false;
+#endif // WEBRTC_WIN || WEBRTC_LINUX
 }
 
 } // namespace Webrtc

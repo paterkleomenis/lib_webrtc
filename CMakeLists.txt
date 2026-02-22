@@ -34,6 +34,8 @@ PRIVATE
 
     webrtc/platform/linux/webrtc_environment_linux.cpp
     webrtc/platform/linux/webrtc_environment_linux.h
+    webrtc/platform/linux/webrtc_loopback_adm_linux.cpp
+    webrtc/platform/linux/webrtc_loopback_adm_linux.h
     webrtc/platform/mac/webrtc_environment_mac.h
     webrtc/platform/mac/webrtc_environment_mac.mm
     webrtc/platform/win/webrtc_environment_win.cpp
@@ -54,6 +56,11 @@ elseif (APPLE)
     target_compile_definitions(lib_webrtc
     PRIVATE
         WEBRTC_MAC
+    )
+elseif (LINUX)
+    target_compile_definitions(lib_webrtc
+    PRIVATE
+        WEBRTC_LINUX
     )
 endif()
 

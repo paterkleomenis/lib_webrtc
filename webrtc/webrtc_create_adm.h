@@ -51,6 +51,12 @@ public:
 	void setLoopbackEnabled(bool enabled);
 	[[nodiscard]] bool loopbackEnabled() const;
 
+	void setMicrophoneMuted(bool muted);
+	[[nodiscard]] bool microphoneMuted() const;
+
+	void setPlaybackVolume(float volume);
+	[[nodiscard]] float playbackVolume() const;
+
 private:
 	friend class details::MixingAudioDeviceModule;
 	void attach(details::MixingAudioDeviceModule *module);
@@ -59,6 +65,8 @@ private:
 	std::mutex _mutex;
 	details::MixingAudioDeviceModule *_module = nullptr;
 	bool _pendingEnabled = false;
+	bool _microphoneMuted = false;
+	float _playbackVolume = 1.f;
 
 };
 

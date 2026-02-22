@@ -345,10 +345,25 @@ public:
 			uint32_t currentMicLevel,
 			bool keyPressed,
 			uint32_t &newMicLevel) override {
-		// Only mix when enabled and the buffer is 16-bit PCM.
-		if (!_mixingEnabled.load(std::memory_order_relaxed)
-			|| !_collector
-			|| nBytesPerSample != 2) {
+		const auto mixing = _mixingEnabled.load(std::memory_order_relaxed);
+		const auto muted = _microphoneMuted.load(std::memory_order_relaxed);
+
+		// Fast path: nothing to do, hand off directly.
+		if (!mixing && !muted) {
+			return _inner->RecordedDataIsAvailable(
+				audioSamples,
+				nSamples,
+				nBytesPerSample,
+				nChannels,
+				samplesPerSec,
+				totalDelayMS,
+				clockDrift,
+				currentMicLevel,
+				keyPressed,
+				newMicLevel);
+		}
+
+		if (nBytesPerSample != 2) {
 			return _inner->RecordedDataIsAvailable(
 				audioSamples,
 				nSamples,
@@ -364,11 +379,22 @@ public:
 
 		const auto totalSamples = nSamples * nChannels;
 		_mixBuffer.resize(totalSamples);
-		std::memcpy(
-			_mixBuffer.data(),
-			audioSamples,
-			totalSamples * sizeof(int16_t));
-		_collector->readAndMix(_mixBuffer.data(), nSamples, nChannels);
+		if (muted) {
+			// Zero out mic samples so the microphone is silent while
+			// still allowing system audio (loopback) to flow through.
+			std::memset(
+				_mixBuffer.data(),
+				0,
+				totalSamples * sizeof(int16_t));
+		} else {
+			std::memcpy(
+				_mixBuffer.data(),
+				audioSamples,
+				totalSamples * sizeof(int16_t));
+		}
+		if (mixing && _collector) {
+			_collector->readAndMix(_mixBuffer.data(), nSamples, nChannels);
+		}
 
 		return _inner->RecordedDataIsAvailable(
 			_mixBuffer.data(),
@@ -392,7 +418,7 @@ public:
 			size_t &nSamplesOut,
 			int64_t *elapsed_time_ms,
 			int64_t *ntp_time_ms) override {
-		return _inner->NeedMorePlayData(
+		const auto result = _inner->NeedMorePlayData(
 			nSamples,
 			nBytesPerSample,
 			nChannels,
@@ -401,6 +427,21 @@ public:
 			nSamplesOut,
 			elapsed_time_ms,
 			ntp_time_ms);
+		// Scale playback samples by the requested volume (1.0 = unity gain).
+		const auto volume =
+			_playbackVolume.load(std::memory_order_relaxed);
+		if (result == 0
+			&& volume < 0.999f
+			&& nBytesPerSample == 2
+			&& nSamplesOut > 0) {
+			const auto total = nSamplesOut * nChannels;
+			auto *samples = static_cast<int16_t *>(audioSamples);
+			for (size_t i = 0; i < total; ++i) {
+				samples[i] = static_cast<int16_t>(
+					samples[i] * volume);
+			}
+		}
+		return result;
 	}
 
 	void PullRenderData(
@@ -425,10 +466,20 @@ public:
 		_mixingEnabled.store(enabled, std::memory_order_relaxed);
 	}
 
+	void setMicrophoneMuted(bool muted) {
+		_microphoneMuted.store(muted, std::memory_order_relaxed);
+	}
+
+	void setPlaybackVolume(float volume) {
+		_playbackVolume.store(volume, std::memory_order_relaxed);
+	}
+
 private:
 	webrtc::AudioTransport *_inner = nullptr;
 	std::shared_ptr<LoopbackCollector> _collector;
 	std::atomic<bool> _mixingEnabled = false;
+	std::atomic<bool> _microphoneMuted = false;
+	std::atomic<float> _playbackVolume = 1.f;
 	std::vector<int16_t> _mixBuffer;
 };
 
@@ -477,6 +528,18 @@ public:
 		}
 	}
 
+	void setMicrophoneMuted(bool muted) {
+		if (_mixingTransport) {
+			_mixingTransport->setMicrophoneMuted(muted);
+		}
+	}
+
+	void setPlaybackVolume(float volume) {
+		if (_mixingTransport) {
+			_mixingTransport->setPlaybackVolume(volume);
+		}
+	}
+
 	// webrtc::AudioDeviceModule interface — delegate everything to _inner.
 
 	int32_t ActiveAudioLayer(AudioLayer *audioLayer) const override {
@@ -490,6 +553,16 @@ public:
 				audioCallback,
 				_collector);
 			_mixingTransport->setMixingEnabled(_loopbackActive);
+			if (_control) {
+				auto lock = std::lock_guard(_control->_mutex);
+				if (_control->_microphoneMuted) {
+					_mixingTransport->setMicrophoneMuted(true);
+				}
+				if (_control->_playbackVolume < 0.999f) {
+					_mixingTransport->setPlaybackVolume(
+						_control->_playbackVolume);
+				}
+			}
 			return _inner->RegisterAudioCallback(_mixingTransport.get());
 		}
 		_mixingTransport = nullptr;
@@ -857,11 +930,43 @@ bool MixingAudioControl::loopbackEnabled() const {
 	return _pendingEnabled;
 }
 
+void MixingAudioControl::setMicrophoneMuted(bool muted) {
+	auto lock = std::lock_guard(_mutex);
+	_microphoneMuted = muted;
+	if (_module) {
+		_module->setMicrophoneMuted(muted);
+	}
+}
+
+bool MixingAudioControl::microphoneMuted() const {
+	return _microphoneMuted;
+}
+
+void MixingAudioControl::setPlaybackVolume(float volume) {
+	auto lock = std::lock_guard(_mutex);
+	_playbackVolume = volume;
+	if (_module) {
+		_module->setPlaybackVolume(volume);
+	}
+}
+
+float MixingAudioControl::playbackVolume() const {
+	return _playbackVolume;
+}
+
 void MixingAudioControl::attach(details::MixingAudioDeviceModule *module) {
 	auto lock = std::lock_guard(_mutex);
 	_module = module;
-	if (_module && _pendingEnabled) {
-		_module->setLoopbackEnabled(true);
+	if (_module) {
+		if (_pendingEnabled) {
+			_module->setLoopbackEnabled(true);
+		}
+		if (_microphoneMuted) {
+			_module->setMicrophoneMuted(true);
+		}
+		if (_playbackVolume < 0.999f) {
+			_module->setPlaybackVolume(_playbackVolume);
+		}
 	}
 }
 

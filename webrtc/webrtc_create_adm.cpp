@@ -24,6 +24,9 @@
 #include "webrtc/platform/linux/webrtc_loopback_adm_linux.h"
 #include <al.h>
 #include <alc.h>
+#include <api/audio/audio_frame.h>
+#include <modules/audio_processing/include/audio_processing.h>
+#include <modules/audio_processing/include/audio_frame_proxies.h>
 #endif // WEBRTC_WIN || WEBRTC_LINUX
 
 namespace Webrtc {
@@ -251,7 +254,6 @@ private:
 	}
 
 	void captureLoop(const std::string &deviceId) {
-		// Try stereo first, fall back to mono.
 		auto *device = alcCaptureOpenDevice(
 			deviceId.c_str(),
 			kCaptureFrequency,
@@ -268,6 +270,29 @@ private:
 		}
 		if (!device) {
 			return;
+		}
+
+		details::SetLoopbackCaptureActiveLinux(true);
+
+		auto aec = rtc::scoped_refptr<webrtc::AudioProcessing>();
+		auto capturedFrame = std::unique_ptr<webrtc::AudioFrame>();
+		auto renderedFrame = std::unique_ptr<webrtc::AudioFrame>();
+		if (channels == 2) {
+			aec = webrtc::AudioProcessingBuilder().Create();
+			auto config = webrtc::AudioProcessing::Config();
+			config.echo_canceller.enabled = true;
+			config.echo_canceller.mobile_mode = true;
+			aec->ApplyConfig(config);
+
+			capturedFrame = std::make_unique<webrtc::AudioFrame>();
+			capturedFrame->sample_rate_hz_ = kCaptureFrequency;
+			capturedFrame->num_channels_ = channels;
+			capturedFrame->samples_per_channel_ = kCaptureFramesPerPoll;
+
+			renderedFrame = std::make_unique<webrtc::AudioFrame>();
+			renderedFrame->sample_rate_hz_ = kCaptureFrequency;
+			renderedFrame->num_channels_ = channels;
+			renderedFrame->samples_per_channel_ = kCaptureFramesPerPoll;
 		}
 
 		alcCaptureStart(device);
@@ -289,7 +314,36 @@ private:
 					device,
 					reinterpret_cast<ALCvoid *>(readBuffer.data()),
 					kCaptureFramesPerPoll);
-				if (_collector) {
+				if (aec && renderedFrame && capturedFrame) {
+					const auto delay =
+						details::LoopbackCaptureTakeFarEndLinux(
+							*renderedFrame,
+							crl::now());
+					if (delay.has_value()) {
+						aec->set_stream_delay_ms(*delay);
+						webrtc::ProcessReverseAudioFrame(
+							aec.get(),
+							renderedFrame.get());
+						memcpy(
+							capturedFrame->mutable_data(),
+							readBuffer.data(),
+							readBuffer.size() * sizeof(int16_t));
+						webrtc::ProcessAudioFrame(
+							aec.get(),
+							capturedFrame.get());
+						if (_collector) {
+							_collector->pushSamples(
+								capturedFrame->data(),
+								kCaptureFramesPerPoll,
+								channels);
+						}
+					} else if (_collector) {
+						_collector->pushSamples(
+							readBuffer.data(),
+							kCaptureFramesPerPoll,
+							channels);
+					}
+				} else if (_collector) {
 					_collector->pushSamples(
 						readBuffer.data(),
 						kCaptureFramesPerPoll,
@@ -301,12 +355,14 @@ private:
 
 		alcCaptureStop(device);
 		alcCaptureCloseDevice(device);
+		details::SetLoopbackCaptureActiveLinux(false);
 	}
 
 	std::shared_ptr<LoopbackCollector> _collector;
 	std::thread _thread;
 	std::atomic<bool> _running = false;
 	std::atomic<bool> _shouldStop = false;
+
 };
 
 #endif // WEBRTC_LINUX

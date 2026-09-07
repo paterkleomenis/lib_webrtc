@@ -559,7 +559,9 @@ public:
 		webrtc::TaskQueueFactory *taskQueueFactory,
 		std::shared_ptr<MixingAudioControl> control)
 	: _inner(std::move(inner))
+#ifdef WEBRTC_WIN
 	, _taskQueueFactory(taskQueueFactory)
+#endif // WEBRTC_WIN
 	, _control(std::move(control))
 	, _collector(std::make_shared<LoopbackCollector>()) {
 		if (_control) {
@@ -955,7 +957,9 @@ private:
 #endif // WEBRTC_WIN
 
 	rtc::scoped_refptr<webrtc::AudioDeviceModule> _inner;
+#ifdef WEBRTC_WIN
 	webrtc::TaskQueueFactory *_taskQueueFactory = nullptr;
+#endif // WEBRTC_WIN
 	std::shared_ptr<MixingAudioControl> _control;
 
 	std::shared_ptr<LoopbackCollector> _collector;
